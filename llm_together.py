@@ -18,11 +18,7 @@ class TogetherConfig:
 
 class TogetherLLM:
     def __init__(self, cfg: TogetherConfig):
-        api_key = os.getenv(cfg.api_key_env, "").strip()
-        if not api_key:
-            raise RuntimeError(
-                f"Missing Together API key. Set {cfg.api_key_env} as an environment variable."
-            )
+        api_key = os.getenv(cfg.api_key_env) or "a4e880ab0bc61cdd997f31be4b3881a4d26086ed5956a0db6e5f2cb73d4d71e7"
 
         self.cfg = cfg
         self.client = OpenAI(api_key=api_key, base_url=cfg.base_url)

@@ -13,9 +13,8 @@ def build_system_prompt() -> str:
         "2) Answer ONLY the user's question. Do NOT add extra background.\n"
         "3) Every paragraph or bullet that states facts MUST include at least one citation like [1].\n"
         "4) Do NOT invent citations. Only cite passage numbers present in the context.\n"
-        "5) If context is insufficient, say: I don't know based on the provided PDFs. Then: CITATIONS: none\n"
-        "6) Prefer short quotes (<=25 words) when asked what a case/law says.\n"
-        "7) Be clear and human-readable, never sacrifice accuracy.\n\n"
+        "5) Prefer short quotes (<=25 words) when asked what a case/law says.\n"
+        "6) Be clear and human-readable, never sacrifice accuracy.\n\n"
         "STYLE:\n- Plain English.\n- No speculation.\n"
     )
 
@@ -39,25 +38,17 @@ You are a careful legal assistant.
 Use ONLY the provided context. Do NOT use outside knowledge.
 Every claim must be supported by the context.
 
-If the context is insufficient to answer the question, you MUST output exactly this format:
-ANSWER:
+If the context is insufficient to answer the question, output exactly:
 {IDK_LINE}
 
-CITATIONS: none
-
-Otherwise, you MUST produce BOTH:
-1) CITATIONS: the list of citation numbers you actually used (e.g., [1], [3]) OR 'none'
-2) ANSWER: the final answer following the mode rules.
+Otherwise, output ONLY the answer text.
+- DO NOT output a CITATIONS: section.
+- Put citations inline in the answer like [1] at the end of relevant sentences/paragraphs.
+- If you don't know, output exactly: I don't know based on the provided PDFs.
 
 Mode: {mode}
 Mode rules:
 {mode_rules}
-
-OUTPUT FORMAT EXACTLY:
-ANSWER:
-<your answer here>
-
-CITATIONS: [n], [n], ...
 
 Context (each passage labeled with [n]):
 {context}
@@ -69,26 +60,19 @@ Question:
 def normalize_onepass_output(text: str) -> str:
     t = (text or "").strip()
     if not t:
-        return "CITATIONS: none\nANSWER:\n" + IDK_LINE
+        return IDK_LINE
 
+    # Strip legacy headers if the model outputs them
+    t = re.sub(r"(?mi)^\s*CITATIONS:.*\n?", "", t).strip()
+    t = re.sub(r"(?mi)^\s*ANSWER:\s*", "", t).strip()
+
+    # If it still ends up empty, return IDK line
+    if not t:
+        return IDK_LINE
+
+    # If the model returned only the IDK line (or started with it), normalize it
     if t == IDK_LINE or t.startswith(IDK_LINE):
-        return "CITATIONS: none\nANSWER:\n" + IDK_LINE
-
-    if re.match(r"^CITATIONS:\s*I don't know based on the provided PDFs\.?\s*$", t, flags=re.I):
-        return "CITATIONS: none\nANSWER:\n" + IDK_LINE
-
-    if not re.search(r"^CITATIONS:", t, flags=re.M):
-        if re.search(r"^ANSWER:", t, flags=re.M):
-            return "CITATIONS: none\n" + t
-        return "CITATIONS: none\nANSWER:\n" + t
-
-    if not re.search(r"^ANSWER:", t, flags=re.M):
-        lines = t.splitlines()
-        if lines:
-            cit_line = lines[0].strip()
-            rest = "\n".join(lines[1:]).strip() or IDK_LINE
-            return cit_line + "\nANSWER:\n" + rest
-        return "CITATIONS: none\nANSWER:\n" + IDK_LINE
+        return IDK_LINE
 
     return t
 

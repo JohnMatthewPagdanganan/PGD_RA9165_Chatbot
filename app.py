@@ -1,72 +1,100 @@
 import os
-import streamlit as st
 from pathlib import Path
+import gradio as gr
 
-st.set_page_config(page_title="Lex9165", layout="wide")
-
-# ----------------------------
-# 1) Secrets → Environment (BEFORE importing main/build_bot)
-# ----------------------------
-together_key = st.secrets.get("TOGETHER_API_KEY", None) or os.getenv("TOGETHER_API_KEY", "")
-hf_token = st.secrets.get("HF_TOKEN", None) or os.getenv("HF_TOKEN", "") or os.getenv("HUGGINGFACE_HUB_TOKEN", "")
-
-if not together_key:
-    st.error("Missing TOGETHER_API_KEY. Add it in Streamlit Secrets.")
-    st.stop()
-
-os.environ["TOGETHER_API_KEY"] = together_key
-
-# HF token is strongly recommended to avoid 429 rate limits
-if hf_token:
-    os.environ["HF_TOKEN"] = hf_token
-    os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
-
-# Helps avoid HF XET-related issues on some hosts
-os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-
-# Optional: keep downloads in your repo folder (Streamlit Cloud has write access here)
-ROOT = Path(__file__).resolve().parent
-os.environ.setdefault("HF_HOME", str(ROOT / ".hf_cache"))
-os.environ.setdefault("TRANSFORMERS_CACHE", str(ROOT / ".hf_cache"))
-os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(ROOT / ".hf_cache"))
-
-# ----------------------------
-# 2) Now import build_bot (SAFE)
-# ----------------------------
+# Your builder
 from main import build_bot
 
+ROOT = Path(__file__).resolve().parent
 
-# ----------------------------
-# 3) Load on start (cached)
-# ----------------------------
-@st.cache_resource(show_spinner=False)
-def load_bot():
-    return build_bot(ROOT)
+# Global singleton (lazy-loaded)
+BOT = None
 
-st.title("Lex9165: RA 9165 Legal Assistant")
+def ensure_env():
+    """
+    Gradio doesn't have st.secrets. Use environment variables.
+    Set these in your host (HF Spaces / Render / etc).
+    """
+    # Together
+    if not os.getenv("TOGETHER_API_KEY", "").strip():
+        raise RuntimeError("Missing TOGETHER_API_KEY environment variable.")
 
-with st.spinner("Loading models and indexes (first run can take a while)..."):
+    # HuggingFace token strongly recommended to avoid 429 rate limit on model downloads
+    # Not strictly required if models are already cached, but usually needed on hosts.
+    # If you don't have it, leave it empty; but expect occasional 429.
+    # os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN", "")
+    # Also supported:
+    # os.environ["HUGGINGFACE_HUB_TOKEN"] = os.getenv("HF_TOKEN", "")
+
+def load_bot_once():
+    global BOT
+    if BOT is None:
+        ensure_env()
+        BOT = build_bot(ROOT)
+    return BOT
+
+def load_models():
+    """
+    Button action: load models on-demand.
+    This avoids startup crash/timeouts.
+    """
     try:
-        bot = load_bot()
+        load_bot_once()
+        return "✅ Models loaded. You can now ask questions."
     except Exception as e:
-        st.error("Failed to initialize the app. Check logs in 'Manage app' for the full traceback.")
-        st.exception(e)  # shows full error to you; remove later if you want
-        st.stop()
+        return f"❌ Failed to load models:\n{type(e).__name__}: {e}"
 
-# ----------------------------
-# 4) UI
-# ----------------------------
-q = st.text_input("Ask a question:", placeholder="e.g., What are the requirements under Section 21 of RA 9165?")
+def answer_question(q: str):
+    """
+    Chat action: loads bot if not loaded, then answers.
+    """
+    q = (q or "").strip()
+    if not q:
+        return "Please enter a question.", ""
 
-if st.button("Ask") and q.strip():
-    with st.spinner("Retrieving and generating..."):
-        reply, hits = bot.answer(q.strip())
+    try:
+        bot = load_bot_once()
+        reply, hits = bot.answer(q)
 
-    st.subheader("Answer")
-    st.text(reply)
+        # Format sources nicely
+        sources_lines = []
+        for i, h in enumerate(hits or [], 1):
+            src = h.get("source", "unknown")
+            page = h.get("page", "?")
+            snippet = (h.get("text", "") or "").strip().replace("\n", " ")
+            if len(snippet) > 300:
+                snippet = snippet[:300] + "..."
+            sources_lines.append(f"[{i}] {src} (page {page})\n{snippet}")
 
-    st.subheader("Sources")
-    for i, h in enumerate(hits, 1):
-        st.markdown(f"**[{i}]** `{h['source']}` (page {h['page']})")
-        txt = h.get("text", "") or ""
-        st.caption((txt[:600] + ("..." if len(txt) > 600 else "")))
+        sources = "\n\n".join(sources_lines) if sources_lines else "(no sources)"
+        return reply, sources
+
+    except Exception as e:
+        return f"Error: {type(e).__name__}: {e}", ""
+
+with gr.Blocks(title="Lex9165") as demo:
+    gr.Markdown("# Lex9165: RA 9165 Legal Assistant")
+
+    with gr.Row():
+        load_btn = gr.Button("Load models (recommended first)", variant="primary")
+        load_status = gr.Textbox(label="Status", value="Models not loaded yet.", interactive=False)
+
+    load_btn.click(fn=load_models, inputs=None, outputs=load_status)
+
+    q = gr.Textbox(
+        label="Ask a question",
+        placeholder="e.g., What are the requirements under Section 21 of RA 9165?",
+        lines=2
+    )
+    ask_btn = gr.Button("Ask")
+
+    answer = gr.Textbox(label="Answer", lines=12)
+    sources = gr.Textbox(label="Sources", lines=12)
+
+    ask_btn.click(fn=answer_question, inputs=q, outputs=[answer, sources])
+    q.submit(fn=answer_question, inputs=q, outputs=[answer, sources])
+
+if __name__ == "__main__":
+    # For local run:
+    # TOGETHER_API_KEY must be set in your shell env
+    demo.launch(server_name="0.0.0.0", server_port=int(os.getenv("PORT", "7860")))

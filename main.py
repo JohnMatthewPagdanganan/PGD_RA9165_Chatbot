@@ -10,17 +10,11 @@ from sentence_transformers import SentenceTransformer
 from query_tools import QueryProcessor
 from chatbot import Lex9165Chatbot
 import os
-import streamlit as st
+import torch
 
-# Avoid HF Xet token fetch path that often triggers 429 on shared IPs
-os.environ["HF_HUB_DISABLE_XET"] = "1"
-
-# Provide HF auth for model downloads
-HF_TOKEN = st.secrets.get("HF_TOKEN", None) or os.getenv("HF_TOKEN")
+HF_TOKEN = "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"
 if HF_TOKEN:
-    os.environ["HF_TOKEN"] = HF_TOKEN
     os.environ["HUGGINGFACE_HUB_TOKEN"] = HF_TOKEN
-
 
 EMBED_MODEL  = "BAAI/bge-base-en-v1.5"
 RERANK_MODEL = "BAAI/bge-reranker-large"
@@ -31,11 +25,20 @@ def build_bot(project_root: Path) -> Lex9165Chatbot:
     # you said you will no longer use jurisprudence_structured
     corpora = ["jurisprudence", "statutes_and_guidelines"]
     stores = load_all_stores(cache_root, corpora)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    embedding_model = SentenceTransformer(EMBED_MODEL, token=HF_TOKEN)
+    embedding_model = SentenceTransformer(
+        EMBED_MODEL,
+        token=HF_TOKEN,
+        device=device
+    )
     retriever = Retriever(embedding_model=embedding_model)
 
-    reranker = CrossEncoderReranker(RERANK_MODEL, device="cpu", max_length=384)
+    reranker = CrossEncoderReranker(
+        RERANK_MODEL,
+        device=device,
+        max_length=384
+    )
 
     # Together API LLM
     llm = TogetherLLM(TogetherConfig(
