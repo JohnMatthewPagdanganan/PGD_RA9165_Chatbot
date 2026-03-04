@@ -35,7 +35,7 @@ def build_bot(project_root: Path) -> Lex9165Chatbot:
     embedding_model = SentenceTransformer(EMBED_MODEL, token=HF_TOKEN)
     retriever = Retriever(embedding_model=embedding_model)
 
-    reranker = CrossEncoderReranker(RERANK_MODEL, cache_dir=str(project_root / ".hf_cache"), device="cpu")
+    reranker = CrossEncoderReranker(RERANK_MODEL, device="cpu", max_length=384)
 
     # Together API LLM
     llm = TogetherLLM(TogetherConfig(
