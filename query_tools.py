@@ -1,10 +1,8 @@
-# query_tools.py
+# query_tools.py  (NO fastcoref version — copy/paste this whole file)
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 import re
-
-from prompts import build_system_prompt, build_onepass_prompt, normalize_onepass_output, has_uncited_sentences, IDK_LINE
 
 CONTROL_TAGS = {
     "summary":  "SUMMARY",
@@ -96,8 +94,14 @@ def normalize_for_retrieval_v2(q: str, chat_history: List[Dict[str, str]], max_t
     hist_text = " ".join([m.get("content","") for m in chat_history[-max_turns*2:]]).lower()
     hist_about_ra = ("ra 9165" in hist_text) or ("dangerous drugs act" in hist_text)
 
+    # lightweight pronoun injection (acts as a cheap "coref")
     if (mentions_ra or hist_about_ra) and re.search(r"\b(it|this|that|the act|the law)\b", q2, re.I):
-        q2 = re.sub(r"\b(it|this|that|the act|the law)\b", "RA 9165 (Dangerous Drugs Act of 2002)", q2, flags=re.I)
+        q2 = re.sub(
+            r"\b(it|this|that|the act|the law)\b",
+            "RA 9165 (Dangerous Drugs Act of 2002)",
+            q2,
+            flags=re.I
+        )
 
     q2 = re.sub(r"\bconsequence(s)?\b", "penalties and sanctions", q2, flags=re.I)
     q2 = re.sub(r"\bdisobey(ing)?\b", "violation", q2, flags=re.I)
@@ -105,22 +109,10 @@ def normalize_for_retrieval_v2(q: str, chat_history: List[Dict[str, str]], max_t
 
 @dataclass
 class QueryProcessor:
-    coref_model: any
+    # ✅ coref_model removed / optional
     llm: any                    # expects .generate_chat(messages)->str
     max_history_turns: int = 4
     chat_history: List[Dict[str, str]] = field(default_factory=list)
-
-    def _pick_representative(self, cluster_texts):
-        best = ""
-        for m in cluster_texts:
-            m2 = (m or "").strip()
-            if not m2:
-                continue
-            if PRON.fullmatch(m2):
-                continue
-            if len(m2) > len(best):
-                best = m2
-        return best or (cluster_texts[0].strip() if cluster_texts else "")
 
     def build_history_window(self) -> str:
         recent = self.chat_history[-self.max_history_turns * 2:]
@@ -131,30 +123,6 @@ class QueryProcessor:
             if content:
                 parts.append(f"{role}: {content}")
         return "\n".join(parts)
-
-    def maybe_coref_enrich_query_fastcoref(self, q: str) -> str:
-        if not PRON.search(q):
-            return q
-        window = self.build_history_window()
-        combined = (window + "\nUSER: " + q).strip()
-
-        pred = self.coref_model.predict(texts=[combined])[0]
-        clusters = pred.get_clusters()
-
-        repl = {}
-        for cl in clusters:
-            rep = self._pick_representative(cl)
-            for m in cl:
-                m2 = (m or "").strip()
-                if PRON.fullmatch(m2 or ""):
-                    repl[m2] = rep
-
-        resolved = combined
-        for k in sorted(repl.keys(), key=len, reverse=True):
-            resolved = re.sub(rf"\b{re.escape(k)}\b", repl[k], resolved, flags=re.I)
-
-        m = re.search(r"\bUSER:\s*(.*)$", resolved, re.I | re.M)
-        return (m.group(1).strip() if m else q)
 
     def rewrite_query_for_retrieval(self, user_query: str) -> str:
         recent = self.chat_history[-self.max_history_turns * 2:]
@@ -196,11 +164,12 @@ Standalone retrieval query:
 
     def finalize_retrieval_query(self, cleaned_query: str) -> str:
         normalized = normalize_for_retrieval_v2(cleaned_query, self.chat_history, self.max_history_turns)
-        normalized2 = self.maybe_coref_enrich_query_fastcoref(normalized)
 
-        if len(normalized2.split()) < 6 or re.search(r"\b(it|this|that|the act|the law|those|them)\b", normalized2, re.I):
-            return self.rewrite_query_for_retrieval(normalized2)
-        return normalized2
+        # If still short/vague, use LLM rewrite (keeps your "follow-up" capability)
+        if len(normalized.split()) < 6 or re.search(r"\b(it|this|that|the act|the law|those|them)\b", normalized, re.I):
+            return self.rewrite_query_for_retrieval(normalized)
+
+        return normalized
 
     def update_history(self, user: str, assistant: str):
         self.chat_history.append({"role": "user", "content": user})
